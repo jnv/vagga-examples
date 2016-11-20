@@ -1,0 +1,82 @@
+# MySQL 5.6 on Ubuntu Trusty
+#
+# Based on [Laravel tutorial](https://vagga.readthedocs.io/en/latest/examples/tutorials/laravel.html#setup-the-database),
+# with persistent volume. MySQL runs as root, PIDfile and socket is located in /run/mysqld.
+# Upon successful execution of mysql-server it tails error log in /tmp/mysql.log
+#
+containers:
+  mysql:
+    setup:
+      - !Ubuntu trusty
+      - !UbuntuUniverse
+
+      - !Install
+        - mysql-server-5.6
+        - mysql-client-5.6
+      - !Text
+        /etc/mysql/conf.d/vagga.cnf: |
+          [client]
+          socket          = /run/mysqld/mysqld.sock
+          [mysqld_safe]
+          socket          = /run/mysqld/mysqld.sock
+          [mysqld]
+          user            = root
+          pid-file        = /run/mysqld/mysqld.pid
+
+      - !Sh |
+          sed -Ei 's/^(user|log)/#&/' /etc/mysql/my.cnf # Comment out log file, default user
+          # Workaround for FATAL ERROR: Could not find my-default.cnf
+          if [ ! -f /usr/share/mysql/my-default.cnf ] ; then
+            ln -s /etc/mysql/my.cnf /usr/share/mysql/my-default.cnf
+          fi
+      - !Remove /var/lib/mysql
+      - !EnsureDir /data
+    environ: &db_config
+      DB_DATABASE: vagga
+      DB_USERNAME: vagga
+      DB_PASSWORD: vagga
+      DB_HOST: 127.0.0.1
+      DB_PORT: 3307
+      DB_DATA_DIR: /data
+    volumes:
+      /data: !Persistent
+        name: mysql
+        init-command: _mysql-init
+
+commands:
+  _mysql-init: !Command
+      description: Init MySQL data volume
+      container: mysql
+      run: |
+        set -ex
+        ls -la $DB_DATA_DIR
+
+        mysql_install_db --datadir=$DB_DATA_DIR --user=root \
+          --keep-my-cnf \
+          --defaults-file=/etc/mysql/my.cnf
+
+        mysqld_safe --user=root --datadir=$DB_DATA_DIR \
+          --skip-networking --skip-syslog --log-error=/tmp/mysql.log &
+
+        # wait for server to be ready
+        while [ ! -S /run/mysqld/mysqld.sock ]; do sleep 0.2; done
+
+        mysqladmin create $DB_DATABASE
+        mysql -e "CREATE USER '$DB_USERNAME'@'localhost' IDENTIFIED BY '$DB_PASSWORD';"
+        mysql -e "GRANT ALL PRIVILEGES ON $DB_DATABASE.* TO '$DB_USERNAME'@'localhost';"
+        mysql -e "FLUSH PRIVILEGES;"
+
+        mysqladmin -u root shutdown
+
+  mysql-server: !Command
+    description: Run MySQL server
+    container: mysql
+    run: |
+      mysqld_safe --user=root --datadir=$DB_DATA_DIR \
+        --bind-address=$DB_HOST --port=$DB_PORT \
+        --skip-syslog --log-error=/tmp/mysql.log &
+      while [ ! -S /run/mysqld/mysqld.sock ]; do sleep 0.2; done
+      tail -f /tmp/mysql.log
+
+
+
